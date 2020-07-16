@@ -205,6 +205,9 @@ class Map extends React.Component {
     // const initialVisibilityVersion = this.props.visibilityVersion === 1; /* see tree reducer, we set this to 1 after tree comes back */
     // const newVisibilityVersion = this.props.visibilityVersion !== prevProps.visibilityVersion;
 
+    // following is temporary and only for prototyping <States>
+    if (!this.props.metadata.geoResolutions.filter((x) => x.key === this.props.geoResolution)[0].demes) return;
+
     if (mapIsDrawn && allDataPresent && demesTransmissionsNotComputed) {
       timerStart("drawDemesAndTransmissions");
       /* data structures to feed to d3 latLongs = { tips: [{}, {}], transmissions: [{}, {}] } */
@@ -365,6 +368,10 @@ class Map extends React.Component {
    */
   maybeUpdateDemesAndTransmissions(nextProps) {
     if (!this.state.map || !this.props.treeLoaded || !this.state.d3elems) { return; }
+
+    // following is temporary and only for prototyping <States>
+    if (!nextProps.metadata.geoResolutions.filter((x) => x.key === nextProps.geoResolution)[0].demes) return;
+
     const visibilityChange = nextProps.visibilityVersion !== this.props.visibilityVersion;
     const haveData = nextProps.nodes && nextProps.visibility && nextProps.geoResolution && nextProps.nodeColors;
 
