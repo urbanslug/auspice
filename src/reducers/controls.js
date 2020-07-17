@@ -66,6 +66,8 @@ export const getDefaultControlsState = () => {
     filters: {},
     showDownload: false,
     quickdraw: false, // if true, components may skip expensive computes.
+    mapDisplayType: "geo",
+    mapDisplayTypesAvailable: [],
     mapAnimationDurationInMilliseconds: 30000, // in milliseconds
     mapAnimationStartDate: null, // Null so it can pull the absoluteDateMin as the default
     mapAnimationCumulative: false,
@@ -214,8 +216,12 @@ const Controls = (state = getDefaultControlsState(), action) => {
     }
     case types.CHANGE_GEO_RESOLUTION:
       return Object.assign({}, state, {
-        geoResolution: action.data
+        geoResolution: action.geoResolution,
+        mapDisplayType: action.mapDisplayType,
+        mapDisplayTypesAvailable: action.mapDisplayTypesAvailable
       });
+    case types.CHANGE_MAP_DISPLAY_TYPE:
+      return {...state, mapDisplayType: action.mapDisplayType};
     case types.APPLY_FILTER: {
       // values arrive as array
       const filters = Object.assign({}, state.filters, {});

@@ -39,7 +39,8 @@ const Frequencies = lazy(() => import("../frequencies"));
   metadataLoaded: state.metadata.loaded,
   treeLoaded: state.tree.loaded,
   sidebarOpen: state.controls.sidebarOpen,
-  showOnlyPanels: state.controls.showOnlyPanels
+  showOnlyPanels: state.controls.showOnlyPanels,
+  mapDisplayType: state.controls.mapDisplayType
 }))
 class Main extends React.Component {
   constructor(props) {
@@ -142,8 +143,12 @@ class Main extends React.Component {
           }
           {this.props.displayNarrative || this.props.showOnlyPanels ? null : <Info width={calcUsableWidth(availableWidth, 1)} />}
           {this.props.panelsToDisplay.includes("tree") ? <Tree width={big.width} height={big.height} /> : null}
-          <States legend width={big.width} height={big.height} />
-          {this.props.panelsToDisplay.includes("map") ? <Map width={big.width} height={big.height} justGotNewDatasetRenderNewMap={false} legend={this.shouldShowMapLegend()} /> : null}
+          {this.props.panelsToDisplay.includes("map") ?
+            this.props.mapDisplayType === "geo" ?
+              <Map width={big.width} height={big.height} justGotNewDatasetRenderNewMap={false} legend={this.shouldShowMapLegend()} /> :
+              <States legend={this.shouldShowMapLegend()} width={big.width} height={big.height} /> :
+            null
+          }
           {this.props.panelsToDisplay.includes("entropy") ?
             (<Suspense fallback={null}>
               <Entropy width={chart.width} height={chart.height} />
