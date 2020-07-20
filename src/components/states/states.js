@@ -31,7 +31,6 @@ import { isColorByGenotype } from "../../util/getGenotype";
  * improve physics, especially related to SVG boundary
  * improve initial layout
  * don't recreate the d3 chart each time there's a prop change - react according to what's changed
- * wrap with error boundary
  * cancel subscriptions (also not done well for tree + map)
  * decide on JSON format
  * test json with geo-res none of which have lat-longs

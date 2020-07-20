@@ -144,10 +144,14 @@ class Main extends React.Component {
           {this.props.displayNarrative || this.props.showOnlyPanels ? null : <Info width={calcUsableWidth(availableWidth, 1)} />}
           {this.props.panelsToDisplay.includes("tree") ? <Tree width={big.width} height={big.height} /> : null}
           {this.props.panelsToDisplay.includes("map") ?
-            this.props.mapDisplayType === "geo" ?
-              <Map width={big.width} height={big.height} justGotNewDatasetRenderNewMap={false} legend={this.shouldShowMapLegend()} /> :
-              <States legend={this.shouldShowMapLegend()} width={big.width} height={big.height} /> :
-            null
+            <ErrorBoundary showNothing>
+              {
+                this.props.mapDisplayType === "geo" ?
+                  <Map width={big.width} height={big.height} justGotNewDatasetRenderNewMap={false} legend={this.shouldShowMapLegend()} /> :
+                  <States legend={this.shouldShowMapLegend()} width={big.width} height={big.height} />
+              }
+            </ErrorBoundary>
+            : null
           }
           {this.props.panelsToDisplay.includes("entropy") ?
             (<Suspense fallback={null}>
