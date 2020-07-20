@@ -17,6 +17,7 @@ import { getTraitFromNode } from "../../util/treeMiscHelpers";
 import { bezier } from "../map/transmissionBezier";
 import { NODE_NOT_VISIBLE, demeCountMultiplier, demeCountMinimum } from "../../util/globals";
 import { updateTipRadii } from "../../actions/tree";
+import { isColorByGenotype } from "../../util/getGenotype";
 
 /**
  * This is a prototype.
@@ -34,7 +35,6 @@ import { updateTipRadii } from "../../actions/tree";
  * cancel subscriptions (also not done well for tree + map)
  * decide on JSON format
  * test json with geo-res none of which have lat-longs
- * allow genotype to be a geo-res!
  */
 
 @connect((state) => {
@@ -163,11 +163,12 @@ function setUpTransmissions(showTransmissionLines, nodes, visibility, geoResolut
   if (!showTransmissionLines) return {transmissionData, transmissionIndices};
 
   /* loop through nodes and compare each with its own children to get A->B transmissions */
+  const genotype = isColorByGenotype(geoResolution);
   nodes.forEach((n) => {
-    const nodeDeme = getTraitFromNode(n, geoResolution);
+    const nodeDeme = getTraitFromNode(n, geoResolution, {genotype});
     if (n.children) {
       n.children.forEach((child) => {
-        const childDeme = getTraitFromNode(child, geoResolution);
+        const childDeme = getTraitFromNode(child, geoResolution, {genotype});
         if (nodeDeme && childDeme && nodeDeme !== childDeme) {
 
           // Keep track of how many we've seen from A->B in order to get a curve's "extend"

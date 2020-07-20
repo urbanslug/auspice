@@ -449,6 +449,9 @@ const checkAndCorrectErrorsInState = (state, metadata, query, tree, viewingNarra
 
   /* geoResolutions */
   if (metadata.geoResolutions) {
+    if (isColorByGenotype(state.colorBy)) { // already error corrected above
+      metadata.geoResolutions.push({key: state.colorBy, title: state.colorBy, isGenotype: true});
+    }
     const availableGeoResultions = metadata.geoResolutions.map((i) => i.key);
     if (availableGeoResultions.indexOf(state["geoResolution"]) === -1) {
       /* fallbacks: JSON defined default, then hardocded default, then any available */

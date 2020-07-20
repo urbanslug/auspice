@@ -10,6 +10,7 @@ import { defaultGeoResolution,
 import * as types from "../actions/types";
 import { calcBrowserDimensionsInitialState } from "./browserDimensions";
 import { doesColorByHaveConfidence } from "../actions/recomputeReduxState";
+import { isColorByGenotype } from "../util/getGenotype";
 
 /* defaultState is a fn so that we can re-create it
 at any time, e.g. if we want to revert things (e.g. on dataset change)
@@ -207,12 +208,18 @@ const Controls = (state = getDefaultControlsState(), action) => {
           action.panelsToDisplay.indexOf("map") !== -1
       });
     case types.NEW_COLORS: {
-      const newState = Object.assign({}, state, {
+      const updatedState = {
         colorBy: action.colorBy,
         colorScale: action.colorScale,
         colorByConfidence: doesColorByHaveConfidence(state, action.colorBy)
-      });
-      return newState;
+      };
+      /* genotype resolutions have to be modified on colorBy change */
+      if (isColorByGenotype(state.geoResolution)) {
+        updatedState.geoResolution = isColorByGenotype(action.colorBy) ?
+          action.colorBy :
+          state.defaults.geoResolution;
+      }
+      return Object.assign({}, state, updatedState);
     }
     case types.CHANGE_GEO_RESOLUTION:
       return Object.assign({}, state, {

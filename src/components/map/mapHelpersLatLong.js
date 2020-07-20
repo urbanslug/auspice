@@ -51,9 +51,10 @@ const maybeGetTransmissionPair = (latOrig, longOrig, latDest, longDest, map) => 
  */
 export const getVisibleNodesPerLocation = (nodes, visibility, geoResolution) => {
   const locationToVisibleNodes = {};
+  const genotype = isColorByGenotype(geoResolution);
   nodes.forEach((n, i) => {
     if (n.children) return; /* only consider terminal nodes */
-    const location = getTraitFromNode(n, geoResolution);
+    const location = getTraitFromNode(n, geoResolution, {genotype});
     if (!location) return; /* ignore undefined locations */
     if (!locationToVisibleNodes[location]) locationToVisibleNodes[location]=[];
     if (visibility[i] !== NODE_NOT_VISIBLE) {
