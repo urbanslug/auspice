@@ -4,55 +4,42 @@ import { withTranslation } from "react-i18next";
 import _max from "lodash/max";
 import { select, event as d3event } from "d3-selection";
 import { interpolateNumber } from "d3-interpolate";
-import { forceSimulation, forceManyBody } from "d3-force";
+import { forceSimulation, forceManyBody, forceCenter } from "d3-force"; // eslint-disable-line
 import { drag as d3drag } from "d3-drag";
 import { arc } from "d3-shape";
 import ErrorBoundary from "../../util/errorBoundry";
 import Legend from "../tree/legend/legend";
 import Card from "../framework/card";
-import { getVisibleNodesPerLocation, createOrUpdateArcs } from "../map/mapHelpersLatLong";
-import { getAverageColorFromNodes } from "../../util/colorHelpers";
+import { createOrUpdateArcs } from "../map/mapHelpersLatLong";
 import { pathStringGenerator, extractLineSegmentForAnimationEffect } from "../map/mapHelpers";
-import { getTraitFromNode } from "../../util/treeMiscHelpers";
 import { bezier } from "../map/transmissionBezier";
+import { getAverageColorFromNodes } from "../../util/colorHelpers";
+import { getTraitFromNode } from "../../util/treeMiscHelpers";
 import { NODE_NOT_VISIBLE, demeCountMultiplier, demeCountMinimum } from "../../util/globals";
-import { updateTipRadii } from "../../actions/tree";
+import { updateTipRadii } from "../../actions/tree"; // eslint-disable-line
 import { isColorByGenotype } from "../../util/getGenotype";
-
-/**
- * This is a prototype.
- * There are numerous calls into functions and use of data structures designed
- * for the <Map> component. These are unnecessarily complex for this use case,
- * but are employed to simplify the creation of a prototype without needing
- * to refactor shared functions or duplicate code.
- */
 
 /**  Known to-do list before release:
  * improve physics, especially related to SVG boundary
  * improve initial layout
- * don't recreate the d3 chart each time there's a prop change - react according to what's changed
- * cancel subscriptions (also not done well for tree + map)
  * decide on JSON format
  * test json with geo-res none of which have lat-longs
+ * better setting of deme sizes (applies to the map as well)
+ * better label positioning
+ * make line width (and "extend") a function of line count
+ * reinstate onhover behavior to highlight nodes in tree (this is a big performance slow-down)
  */
 
 @connect((state) => {
   return {
-    branchLengthsToDisplay: state.controls.branchLengthsToDisplay,
-    absoluteDateMin: state.controls.absoluteDateMin,
-    absoluteDateMax: state.controls.absoluteDateMax,
     nodes: state.tree.nodes,
     nodeColors: state.tree.nodeColors,
     visibility: state.tree.visibility,
-    metadata: state.metadata,
     geoResolution: state.controls.geoResolution,
     dateMinNumeric: state.controls.dateMinNumeric,
     dateMaxNumeric: state.controls.dateMaxNumeric,
     colorBy: state.controls.colorScale.colorBy,
-    pieChart: (
-      !state.controls.colorScale.continuous &&                           // continuous color scale = no pie chart
-      state.controls.geoResolution !== state.controls.colorScale.colorBy // geo circles match colorby == no pie chart
-    ),
+    continuousColorScale: state.controls.colorScale.continuous,
     legendValues: state.controls.colorScale.legendValues,
     showTransmissionLines: state.controls.showTransmissionLines
   };
@@ -60,31 +47,80 @@ import { isColorByGenotype } from "../../util/getGenotype";
 class States extends React.Component {
   constructor(props) {
     super(props);
+    // we store data as properties of the object ("class") rather than in `this.state` because
+    // we don't want react's lifecycle's to run when it's updated as we manage this ourselves
     this.svgDomRef = null;
-    this.simulation = null; // not in `this.state` as we want no updates to occur
+    this.data = {};
+    this.groups = {};
+    this.selections = {};
   }
-  redraw(props) {
-    // prototype. Recreate data every update & redraw.
-    const {demeData, demeIndices, transmissionData, transmissionIndices, demeMultiplier} = setUpDataStructures(props); // eslint-disable-line
-    console.log("redraw()");
-    // console.log("demeData", demeData);
-    // console.log("demeIndices", demeIndices);
-    // console.log("transmissionData", transmissionData);
-    // console.log("transmissionIndices", transmissionIndices);
-    if (this.simulation) this.simulation.stop();
-    const svg = select(this.svgDomRef);
-    svg.selectAll("*").remove();
-    this.simulation = drawDemesAndTransmissions({svg, demeData, transmissionData, demeMultiplier, ...props});
+  recomputeData(props, recompute={everything: true}) {
+    /* We only want to recompute data as needed (it's expensive!) */
+    this.data.demeMultiplier = computeDemeMultiplier(props.nodes);
+
+    if (recompute.everything) {
+      this.data.demes = computeDemeData(props, {demeMultiplier: this.data.demeMultiplier});
+    } else if (recompute.colors) {
+      this.data.demes = computeDemeData(props, {
+        demeMultiplier: this.data.demeMultiplier,
+        existingCoords: this.data.demes.map((d) => ({x: d.x, y: d.y}))
+      });
+    } else if (recompute.visibility) {
+      updateArcData(this.data.demes, props, {demeMultiplier: this.data.demeMultiplier});
+    }
+
+    /* performance improvements are possible here (e.g. colors doesn't need to recreate the beziers!) */
+    if (recompute.everything || recompute.colors || recompute.transmissionToggle) {
+      this.data.transmissions = computeTransmissions(props, this.data);
+    }
+
+    this.simulation.nodes(this.data.demes).stop();
+  }
+  renderData(props, recompute={everything: true}) {
+    /* Labels only render when we update everything. Possible improvement: when demes are not visible
+    (i.e. due to visibility) we may want to remove the label and perhaps update the coordinates.
+    Note that we also re-render when we recompute the color as the data bind needs updating */
+    if (recompute.everything || recompute.colors) {
+      this.selections.labels = renderLabels({g: this.groups.labels, demes: this.data.demes});
+    }
+    /* We remove & rerender demes on ∆colorBy & ∆geoRes, otherwise we update their attrs */
+    if (recompute.everything || recompute.colors) {
+      this.selections.demes = renderDemes({g: this.groups.demes, demes: this.data.demes, geoResolution: props.geoResolution, dispatch: props.dispatch, demeMultiplier: this.demeMultiplier, drag: this.drag});
+    } else if (recompute.visibility) {
+      this.selections.demes = renderUpdatesToExistingDemes({selection: this.selections.demes});
+    }
+    /* we handle transmissions differently -- the visibility is computed here, not in the data construction.
+    Note that it would be more performant to update existing DOM elements rather than destroying & recreating */
+    if (recompute.everything || recompute.colors || recompute.visibility || recompute.transmissionToggle) {
+      this.selections.transmissions = renderTransmissions({g: this.groups.transmissions, transmissions: this.data.transmissions, visibility: props.visibility, dateMinNumeric: props.dateMinNumeric, dateMaxNumeric: props.dateMaxNumeric});
+    }
   }
   componentDidMount() {
-    // console.log("\n\n----------CDM-------------");
-    this.redraw(this.props);
+    this.groups = setUpSvg(this.svgDomRef);
+    this.simulation = forceSimulation()
+        // .force("link", forceLink().id((d) => d.id))
+        // .force("charge", forceManyBody().strength(-10)); // must parameterise strength
+        .force("center", forceCenter(this.props.width / 2, this.props.height / 2)) // mean of all nodes is in center of SVG
+        .on("tick", this.onTick);
+    this.drag = setUpDragFunctions(this.simulation);
+    this.recomputeData(this.props);
+    this.renderData(this.props);
   }
   componentWillReceiveProps(nextProps) {
-    // console.log("\n\n----------CWRP-------------");
-    this.redraw(nextProps);
+    const recompute = compareProps(this.props, nextProps);
+    this.recomputeData(nextProps, recompute);
+    this.renderData(nextProps, recompute);
   }
-
+  onTick = () => {
+    this.selections.demes
+      .attr("transform", (d) => "translate(" + d.parent.x + "," + d.parent.y + ")");
+    this.selections.labels
+      .attr("x", (d) => d.x)
+      .attr("y", (d) => d.y);
+    updateTransmissionCoordinates(this.data.transmissions);
+    this.selections.transmissions
+      .attr("d", (d) => renderBezier(d, this.props.visibility, this.props.dateMinNumeric, this.props.dateMaxNumeric));
+  }
   render() {
     const { t } = this.props;
     return (
@@ -105,84 +141,169 @@ class States extends React.Component {
     );
   }
 
+  componentWillUnmount() {
+    const svg = select(this.svgDomRef);
+    svg.selectAll("*").remove();
+  }
 }
 
-function setUpDataStructures(props) {
-  const locationToVisibleNodes = getVisibleNodesPerLocation(props.nodes, props.visibility, props.geoResolution);
-  const demeData = [];
-  const demeIndices = []; // not useful since we never use triplicate for <States>
-  const visibleTips = props.nodes[0].tipCount;
+function computeDemeMultiplier(nodes) {
+  const visibleTips = nodes[0].tipCount;
   const demeMultiplier =
     demeCountMultiplier /
-    Math.sqrt(_max([Math.sqrt(visibleTips * props.nodes.length), demeCountMinimum]));
-
-  Object.entries(locationToVisibleNodes).forEach(([location, visibleNodes], index) => {
-    const deme = {
-      name: location,
-      count: visibleNodes.length
-    };
-    deme.x = props.width/2;
-    deme.y = props.height/2;
-    if (props.pieChart) {
-      /* create the arcs for the pie chart. NB `demeDataIdx` is the index of the deme in `demeData` where this will be inserted */
-      deme.arcs = createOrUpdateArcs(visibleNodes, props.legendValues, props.colorBy, props.nodeColors);
-      /* create back links between the arcs & which index of `demeData` they (will be) stored at */
-      deme.arcs.forEach((a) => {
-        a.demeDataIdx = index;
-        a.outerRadius = Math.sqrt(deme.count)*demeMultiplier;
-        a.parentDeme = deme;
-      });
-    } else {
-      /* average out the constituent colours for a blended-colour circle */
-      deme.color = getAverageColorFromNodes(visibleNodes, props.nodeColors);
-    }
-    demeData.push(deme);
-    demeIndices[location] = [index];
-  });
-
-  const {transmissionData, transmissionIndices} = setUpTransmissions(
-    props.showTransmissionLines,
-    props.nodes,
-    props.visibility,
-    props.geoResolution,
-    demeData,
-    demeIndices,
-    props.nodeColors
-  );
-
-  return {demeData, demeIndices, transmissionData, transmissionIndices, demeMultiplier};
+    Math.sqrt(_max([Math.sqrt(visibleTips * nodes.length), demeCountMinimum]));
+  return demeMultiplier;
 }
 
-function setUpTransmissions(showTransmissionLines, nodes, visibility, geoResolution, demeData, demeIndices, nodeColors) {
-  /* similar to the <Map>'s setupTransmissionData */
-  const transmissionData = []; /* edges, animation paths */
-  const transmissionIndices = {}; /* map of transmission id to array of indices. Only used for updating? */
-  const demeToDemeCounts = {}; /* Used to ompute the "extend" so that curves don't sit on top of each other */
+/**
+ * Compute demes, including co-ordinates, for _all_ demes regardless of their visibility
+ */
+function computeDemeData(props, {demeMultiplier, existingCoords}) {
+  const {locationToAllNodes, locationToVisibleNodes} = getNodesPerLocation(props.nodes, props.visibility, props.geoResolution);
+  const nDemes = Object.keys(locationToAllNodes).length;
+  const demes = new Array(nDemes); // similar to `demeData` in the <Map> component
+  /* coordinates defined per-deme (i.e. per geo-resolution value) */
+  let coords;
+  if (existingCoords) {
+    if (existingCoords.length !== nDemes) {
+      console.warn("WARNING: provided coords length mismatch");
+      coords = undefined;
+    } else {
+      coords = existingCoords;
+    }
+  }
+  if (!coords) {
+    coords = computeCoordinates(props.width, props.height, nDemes);
+  }
+  /* create data structure for each deme, each containing an array of arcs */
+  Object.entries(locationToAllNodes).forEach(([location, visibleNodes], index) => {
+    const deme = {
+      name: location,
+      count: locationToVisibleNodes[location].length,
+      ...coords[index] // sets `x` & `y`
+    };
+    if (props.geoResolution===props.colorBy || props.continuousColorScale) {
+      deme.arcs = [{innerRadius: 0, startAngle: 0, endAngle: 2*Math.PI, color: getAverageColorFromNodes(visibleNodes, props.nodeColors)}];
+    } else {
+      deme.arcs = createOrUpdateArcs(visibleNodes, props.legendValues, props.colorBy, props.nodeColors);
+    }
+    deme.arcs.forEach((a) => {
+      a.outerRadius = Math.sqrt(deme.count)*demeMultiplier;
+      a.parent = deme;
+    });
+    demes[index]=deme;
+  });
+  return demes;
+}
 
-  if (!showTransmissionLines) return {transmissionData, transmissionIndices};
+/**
+ * Given an array of demes ("node states"), update the constituent arcs. This is used when the
+ * visibility of nodes on the tree has changed etc.
+ * Side effect: Updates the `demes` data structure in place.
+ */
+function updateArcData(demes, props, {demeMultiplier}) {
+  const {locationToAllNodes, locationToVisibleNodes} = getNodesPerLocation(props.nodes, props.visibility, props.geoResolution);
+  const nDemes = Object.keys(locationToAllNodes).length;
+  if (nDemes !== demes.length) {
+    console.warn("Can't update arcs if length differs");
+    return;
+  }
+  demes.forEach((deme) => {
+    const visibleNodes = locationToVisibleNodes[deme.name];
+    deme.count = visibleNodes.length;
+    if (props.geoResolution===props.colorBy) {
+      deme.arcs[0].color = visibleNodes.length ? props.nodeColors[visibleNodes[0].arrayIdx] : "";
+    } else if (props.continuousColorScale) {
+      deme.arcs[0].color = getAverageColorFromNodes(visibleNodes, props.nodeColors);
+    } else {
+      deme.arcs = createOrUpdateArcs(visibleNodes, props.legendValues, props.colorBy, props.nodeColors, deme.arcs);
+    }
+    deme.arcs.forEach((a) => {
+      a.outerRadius = Math.sqrt(deme.count)*demeMultiplier;
+      a.parent = deme;
+    });
+  });
+}
 
-  /* loop through nodes and compare each with its own children to get A->B transmissions */
+/**
+ * Traverses the tips of the tree to create a dict of
+ * location (aka deme) -> list of tips at that location
+ * This is similar to the `getVisibleNodesPerLocation` function used by the <Map>
+ */
+function getNodesPerLocation(nodes, visibility, geoResolution) {
+  const locationToAllNodes = {};
+  const locationToVisibleNodes = {};
   const genotype = isColorByGenotype(geoResolution);
+  nodes.forEach((n, i) => {
+    if (n.children) return; /* only consider terminal nodes */
+    const location = getTraitFromNode(n, geoResolution, {genotype});
+    if (!location) return; /* ignore undefined locations */
+    if (!locationToAllNodes[location]) locationToAllNodes[location]=[];
+    locationToAllNodes[location].push(n);
+    if (!locationToVisibleNodes[location]) locationToVisibleNodes[location]=[];
+    if (visibility[i] !== NODE_NOT_VISIBLE) {
+      locationToVisibleNodes[location].push(n);
+    }
+  });
+  return {locationToAllNodes, locationToVisibleNodes};
+}
+
+/**
+ * Compute `n` coordinates where demes will be located.
+ * Each coordinate is an object with `x` and `y` properties.
+ */
+function computeCoordinates(width, height, n) {
+  const x0 = width/2;
+  const y0 = height/2;
+  const t = 2*Math.PI/(n+1);
+  const r = Math.min(width, height) * 0.4;
+  return Array.from(Array(10).keys())
+    .map((index) => ({
+      x: x0 + r*Math.cos(t*index),
+      y: y0 + r*Math.sin(t*index)
+    }));
+}
+
+/**
+ * Compute an array of transmissions (the data underlying the bezier curves)
+ * Note: approach is similar to the <Map>'s `setupTransmissionData` &
+ * `maybeConstructTransmissionEvent` functions.
+ * Note that this computes all transmissions regardless of visibility. The rendering
+ * code will handle the visibility.
+ */
+function computeTransmissions(props, data) {
+  const transmissionData = [];
+  const demeToDemeCounts = {}; /* Used to compute the "extend" so that curves don't sit on top of each other */
+  const {showTransmissionLines, nodes, geoResolution, nodeColors} = props;
+  if (!showTransmissionLines) return transmissionData;
+  const genotype = isColorByGenotype(geoResolution);
+
+  /* construct a (temporary) mapping of deme (state) name -> data structure */
+  const getDemeFromName = {};
+  data.demes.forEach((d) => {getDemeFromName[d.name] = d;});
+
+  /* loop through (phylogeny) nodes and compare each with its own children to get A->B transmissions */
   nodes.forEach((n) => {
-    const nodeDeme = getTraitFromNode(n, geoResolution, {genotype});
+    const parentDemeValue = getTraitFromNode(n, geoResolution, {genotype});
     if (n.children) {
       n.children.forEach((child) => {
-        const childDeme = getTraitFromNode(child, geoResolution, {genotype});
-        if (nodeDeme && childDeme && nodeDeme !== childDeme) {
+        const childDemeValue = getTraitFromNode(child, geoResolution, {genotype});
+        if (parentDemeValue && childDemeValue && parentDemeValue !== childDemeValue) {
 
           // Keep track of how many we've seen from A->B in order to get a curve's "extend"
-          if ([nodeDeme, childDeme] in demeToDemeCounts) {
-            demeToDemeCounts[[nodeDeme, childDeme]] += 1;
+          if ([parentDemeValue, childDemeValue] in demeToDemeCounts) {
+            demeToDemeCounts[[parentDemeValue, childDemeValue]] += 2;
           } else {
-            demeToDemeCounts[[nodeDeme, childDeme]] = 1;
+            demeToDemeCounts[[parentDemeValue, childDemeValue]] = 1;
           }
-          const extend = demeToDemeCounts[[nodeDeme, childDeme]];
+          const extend = demeToDemeCounts[[parentDemeValue, childDemeValue]];
+
+          const parentDeme = getDemeFromName[parentDemeValue];
+          const childDeme = getDemeFromName[childDemeValue];
 
           // compute a bezier curve
-          // logic following the <Map>'s maybeConstructTransmissionEvent
-          // console.log(`TRANSMISSION! ${nodeDeme} -> ${childDeme}, ${extend}`);
-          const nodeCoords = {x: demeData[demeIndices[nodeDeme]].x, y: demeData[demeIndices[nodeDeme]].y};
-          const childCoords = {x: demeData[demeIndices[childDeme]].x, y: demeData[demeIndices[childDeme]].y};
+          const nodeCoords = {x: parentDeme.x, y: parentDeme.y};
+          const childCoords = {x: childDeme.x, y: childDeme.y};
           const bezierCurve = bezier(nodeCoords, childCoords, extend);
           /* set up interpolator with origin and destination numdates */
           const nodeDate = getTraitFromNode(n, "num_date");
@@ -195,21 +316,17 @@ function setUpTransmissions(showTransmissionLines, nodes, visibility, geoResolut
 
           // following similar data structure same as in <Map>, should be able to cut down
           const transmission = {
-            id: n.arrayIdx.toString() + "-" + child.arrayIdx.toString(),
-            originNode: n,
+            // originNode: n,
             destinationNode: child,
             bezierCurve,
             bezierDates,
-            originDeme: demeData[demeIndices[nodeDeme]],
-            destinationDeme: demeData[demeIndices[childDeme]],
-            originName: nodeDeme,
-            destinationName: childDeme,
-            originCoords: nodeCoords,
-            destinationCoords: childCoords,
+            originDeme: parentDeme,
+            destinationDeme: childDeme,
+            originName: parentDemeValue,
+            destinationName: childDemeValue,
             originNumDate: nodeDate,
             destinationNumDate: childDate,
             color: nodeColors[n.arrayIdx], // colour given by *origin* node
-            visible: visibility[child.arrayIdx] !== NODE_NOT_VISIBLE ? "visible" : "hidden", // transmission visible if child is visible
             extend: extend
           };
           transmissionData.push(transmission);
@@ -217,21 +334,14 @@ function setUpTransmissions(showTransmissionLines, nodes, visibility, geoResolut
       });
     }
   });
-
-  transmissionData.forEach((transmission, index) => {
-    if (!transmissionIndices[transmission.id]) {
-      transmissionIndices[transmission.id] = [index];
-    } else {
-      transmissionIndices[transmission.id].push(index);
-    }
-  });
-
-  return {transmissionData, transmissionIndices};
+  return transmissionData;
 }
 
-
-function updateTransmissionPositions(transmissionData) {
-  transmissionData.forEach((transmission) => {
+/**
+ * update `transmissions` (array) in-place to reflext changes in corresponding deme coords
+ */
+function updateTransmissionCoordinates(transmissions) {
+  transmissions.forEach((transmission) => {
     // recomputing the entire curve isn't the smartest way to do it, but it is the simplest
     transmission.bezierCurve = bezier(
       {x: transmission.originDeme.x, y: transmission.originDeme.y},
@@ -241,89 +351,67 @@ function updateTransmissionPositions(transmissionData) {
   });
 }
 
+function setUpSvg(svgDomRef) {
+  const svg = select(svgDomRef);
+  return {
+    svg,
+    demes: svg.append("g").attr("class", "nodes"),
+    labels: svg.append("g").attr("class", "labels"),
+    transmissions: svg.append("g").attr("class", "transmissions")
+  };
+}
 
-function drawDemesAndTransmissions({
-  svg,
-  demeData,
-  transmissionData,
-  demeMultiplier,
-  dateMinNumeric,
-  dateMaxNumeric,
-  pieChart, /* bool */
-  geoResolution,
-  dispatch
-}) {
-  const width = +svg.attr("width");
-  const height = +svg.attr("height");
-  const simulation = forceSimulation()
-    // .force("link", forceLink().id((d) => d.id))
-    .force("charge", forceManyBody().strength(-10)); // must parameterise strength
-    // .force("center", forceCenter(width / 2, height / 2)); // mean of all nodes is in center of SVG
-
-  /* To do -- de-duplicate as much as possible via d3.call etc */
-  let demes;
-  if (pieChart) {
-    demes = svg.append("g")
-      .attr("class", "state_nodes")
-      .selectAll("circle")
-      .data(demeData)
-      .enter()
-        .append("g")
-        .attr("class", "pie")
-        .selectAll("arc")
-        .call(d3drag()
-          .on("start", dragstarted)
-          .on("drag", dragged)
-          .on("end", dragended)
-        )
-        .data((deme) => deme.arcs)
-        .enter()
-          .append("path")
-          .attr("d", (d) => arc()(d))
-          /* following calls are (almost) the same for pie charts & circles */
-          .style("stroke", "none")
-          .style("fill-opacity", 0.65)
-          .style("fill", (d) => { return d.color; })
-          .style("pointer-events", "all")
-          .attr("transform", (d) =>
-            "translate(" + demeData[d.demeDataIdx].x + "," + demeData[d.demeDataIdx].y + ")"
-          )
-          .on("mouseover", (d) => { dispatch(updateTipRadii({geoFilter: [geoResolution, demeData[d.demeDataIdx].name]})); })
-          .on("mouseout", () => { dispatch(updateTipRadii()); })
-          .call(d3drag()
-            .on("start", dragstartedPie)
-            .on("drag", draggedPie)
-            .on("end", dragendedPie)
-          );
-  } else {
-    demes = svg.append("g")
-    .attr("class", "demes_circles")
-    .selectAll("circle")
-    .data(demeData)
+/**
+ * Given a SVG group selection (`g`), render the demes (the "circles"). Each deme is always
+ * made up of arcs (i.e. a deme is always a pie chart) to simplify the code.
+ */
+function renderDemes({g, demes, geoResolution, dispatch, drag}) { // eslint-disable-line
+  g.selectAll("*").remove();
+  const generateArc = arc();
+  return g.selectAll("circle")
+    .data(demes)
     .enter()
-    .append("circle")
-    .attr("r", (d) => { return demeMultiplier * Math.sqrt(d.count); })
-    /* following calls are (almost) the same for pie charts & circles */
-    .style("stroke", "none")
-    .style("fill-opacity", 0.65)
-    .style("fill", (d) => { return d.color || "black"; })
-    .style("stroke-opacity", 0.85)
-    .style("stroke", (d) => { return d.color || "black"; })
-    .style("pointer-events", "all")
-    .attr("transform", (d) => "translate(" + d.x + "," + d.y + ")")
-    .on("mouseover", (d) => { dispatch(updateTipRadii({geoFilter: [geoResolution, d.name]})); })
-    .on("mouseout", () => { dispatch(updateTipRadii()); })
-    .call(d3drag()
-      .on("start", dragstarted)
-      .on("drag", dragged)
-      .on("end", dragended)
-    );
-  }
+      .append("g")
+      .attr("class", "pie")
+      .selectAll("arc")
+      .data((deme) => deme.arcs)
+      .enter()
+        .append("path")
+        .attr("d", generateArc)
+        .style("stroke", "none")
+        .style("fill-opacity", 0.65)
+        .style("fill", (d) => d.color)
+        .style("pointer-events", "all")
+        .attr("transform", (d) => `translate(${d.parent.x},${d.parent.y})`)
+        // .on("mouseover", (d) => { dispatch(updateTipRadii({geoFilter: [geoResolution, d.parent.name]})); })
+        // .on("mouseout", () => { dispatch(updateTipRadii()); })
+        .call(d3drag()
+          .on("start", drag.dragstarted)
+          .on("drag", drag.dragged)
+          .on("end", drag.dragended)
+        );
+}
 
-  const labels = svg.append("g")
-    .attr("class", "labels")
-    .selectAll("text")
-    .data(demeData)
+/**
+ * Given an existing d3 selection, whose bound data has been updated in-place,
+ * update all of the attrs which may have changed. See `updateArcData`
+ * for the properties of arcs which may have changed.
+ */
+function renderUpdatesToExistingDemes({selection}) {
+  const generateArc = arc();
+  return selection
+    .attr("d", generateArc)
+    .style("fill", (d) => d.color);
+}
+
+/**
+ * Given a SVG group selection (`g`), render labels corresponding
+ * to the `demes`
+ */
+function renderLabels({g, demes}) {
+  g.selectAll("*").remove();
+  return g.selectAll("text")
+    .data(demes)
     .enter()
       .append("text")
       .attr("x", (d) => d.x + 10)
@@ -331,108 +419,90 @@ function drawDemesAndTransmissions({
       .text((d) => d.name)
       .attr("class", "tipLabel")
       .style("font-size", "12px");
-
-  const transmissions = svg.append("g")
-    .attr("class", "transmissions")
-    .selectAll("transmissions")
-    .data(transmissionData)
-    .enter()
-    .append("path") /* instead of appending a geodesic path from the leaflet plugin data, we now draw a line directly between two points */
-    .attr("d", (d) => renderBezier(d, dateMinNumeric, dateMaxNumeric))
-    .attr("fill", "none")
-    .attr("stroke-opacity", 0.6)
-    .attr("stroke-linecap", "round")
-    .attr("stroke", (d) => { return d.color; })
-    .attr("stroke-width", 1);
-
-  simulation
-    .nodes(demeData) // will initialise index, x, y, vx & vy on objects in `demeData`
-    .on("tick", () => {
-      if (pieChart) {
-        demes
-          // to do -- stop arcs going outside visible SVG (Loop over `demeData` instead of using chained d3 call?)
-          .attr("transform", (d) => "translate(" + d.parentDeme.x + "," + d.parentDeme.y + ")");
-      } else {
-        demes
-          .each((d) => { // stop the simulation pushing things outside the visible SVG
-            const pad = 20;
-            if (d.x<pad) d.x=pad;
-            if (d.x>(width-pad)) d.x=width-pad;
-            if (d.y<pad) d.y=pad;
-            if (d.y>(width-pad)) d.y=height-pad;
-          })
-          .attr("transform", (d) => "translate(" + d.x + "," + d.y + ")");
-      }
-      labels
-        .attr("x", (d) => d.x)
-        .attr("y", (d) => d.y);
-      updateTransmissionPositions(transmissionData);
-      transmissions
-        .attr("d", (d) => renderBezier(d, dateMinNumeric, dateMaxNumeric));
-    });
-
-
-  function dragstarted(d) {
-    if (!d3event.active) {
-      simulation.alphaTarget(0.3).restart();
-    }
-    d.fx = d.x;
-    d.fy = d.y;
-  }
-
-  function dragged(d) {
-    d.fx = d3event.x;
-    d.fy = d3event.y;
-  }
-
-  function dragended(d) {
-    if (!d3event.active) {
-      simulation.alphaTarget(0);
-    }
-    d.fx = null;
-    d.fy = null;
-  }
-
-  /* pie chart drag functions are subtly different. Combine function with above! */
-  function dragstartedPie(d) {
-    if (!d3event.active) {
-      simulation.alphaTarget(0.3).restart();
-    }
-    d.parentDeme.fx = d.parentDeme.x;
-    d.parentDeme.fy = d.parentDeme.y;
-  }
-
-  function draggedPie(d) {
-    d.parentDeme.fx = d3event.x;
-    d.parentDeme.fy = d3event.y;
-  }
-
-  function dragendedPie(d) {
-    if (!d3event.active) {
-      simulation.alphaTarget(0);
-    }
-    d.parentDeme.fx = null;
-    d.parentDeme.fy = null;
-  }
-
-  return simulation;
 }
 
-/* function to generate the path (the "d" attr) */
-function renderBezier(d, numDateMin, numDateMax) {
+/**
+ * Given a SVG group selection (`g`), render the transmissions ("curved lines").
+ * Note that it is during rendering that we decide if a line is visible, or what segements of
+ * the line are visibility according to the current temporal slice.
+ */
+function renderTransmissions({g, transmissions, visibility, dateMinNumeric, dateMaxNumeric}) {
+  g.selectAll("*").remove();
+  return g.selectAll("transmissions")
+    .data(transmissions)
+    .enter()
+      .append("path") /* instead of appending a geodesic path from the leaflet plugin data, we now draw a line directly between two points */
+        .attr("d", (d) => renderBezier(d, visibility, dateMinNumeric, dateMaxNumeric))
+        .attr("fill", "none")
+        .attr("stroke-opacity", 0.6)
+        .attr("stroke-linecap", "round")
+        .attr("stroke", (d) => d.color)
+        .attr("stroke-width", 2);
+}
+
+function setUpDragFunctions(simulation) {
+  return {
+    dragstarted: (d) => {
+      if (!d3event.active) {
+        simulation.alphaTarget(0.3).restart();
+      }
+      d.parent.fx = d.parent.x;
+      d.parent.fy = d.parent.y;
+    },
+    dragged: (d) => {
+      d.parent.fx = d3event.x;
+      d.parent.fy = d3event.y;
+    },
+    dragended: (d) => {
+      if (!d3event.active) {
+        simulation.alphaTarget(0);
+      }
+      d.parent.fx = null;
+      d.parent.fy = null;
+    }
+  };
+}
+
+/**
+ * Produce a SVG path ("d" attr) from a datum given temporal & visibility constraints
+ */
+function renderBezier(d, visibility, numDateMin, numDateMax) {
   return pathStringGenerator(
     extractLineSegmentForAnimationEffect(
       numDateMin,
       numDateMax,
-      d.originCoords,
-      d.destinationCoords,
+      {x: d.originDeme.x, y: d.originDeme.y},
+      {x: d.destinationDeme.x, y: d.destinationDeme.y},
       d.originNumDate,
       d.destinationNumDate,
-      d.visible,
+      visibility[d.destinationNode.arrayIdx] !== NODE_NOT_VISIBLE ? "visible" : "hidden",
       d.bezierCurve,
       d.bezierDates
     )
   );
+}
+
+/**
+ * When props change, the data structures behind the data visualisation, and the d3-rendered
+ * visualisation itself, must change. For performance and usability reasons, we don't want
+ * to recompute & rerender everything on every prop change. This function identifies how we
+ * should update the data structures & viz.
+ */
+function compareProps(oldProps, newProps) {
+  const recompute = {
+    everything: false,
+    colors: false,
+    visibility: false
+  };
+  if (oldProps.geoResolution !== newProps.geoResolution) {
+    recompute.everything = true;
+  } else if (oldProps.colorBy !== newProps.colorBy) {
+    recompute.colors = true;
+  } else {
+    recompute.visibility = true;
+  }
+  recompute.transmissionToggle = oldProps.showTransmissionLines !== newProps.showTransmissionLines;
+  return recompute;
 }
 
 const WithTranslation = withTranslation()(States);
