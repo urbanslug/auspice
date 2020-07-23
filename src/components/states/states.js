@@ -4,7 +4,7 @@ import { withTranslation } from "react-i18next";
 import _max from "lodash/max";
 import { select, event as d3event } from "d3-selection";
 import { interpolateNumber } from "d3-interpolate";
-import { forceSimulation, forceManyBody, forceCenter } from "d3-force"; // eslint-disable-line
+import { forceSimulation, forceManyBody, forceCenter, forceLink, forceCollide, forceRadial } from "d3-force"; // eslint-disable-line
 import { drag as d3drag } from "d3-drag";
 import { arc } from "d3-shape";
 import ErrorBoundary from "../../util/errorBoundry";
@@ -19,15 +19,17 @@ import { NODE_NOT_VISIBLE, demeCountMultiplier, demeCountMinimum } from "../../u
 import { updateTipRadii } from "../../actions/tree"; // eslint-disable-line
 import { isColorByGenotype } from "../../util/getGenotype";
 
-/**  Known to-do list before release:
- * improve physics, especially related to SVG boundary
- * improve initial layout
- * decide on JSON format
- * test json with geo-res none of which have lat-longs
- * better setting of deme sizes (applies to the map as well)
- * better label positioning
- * make line width (and "extend") a function of line count
- * reinstate onhover behavior to highlight nodes in tree (this is a big performance slow-down)
+/**  TODO LIST (before release)
+ * test json with geo-res none of which have lat-longs, as well as jsons without any geo-res.
+ * handle browser resizing
+ * performance when there are large numbers of transitions is unacceptable
+ */
+
+/** TODO LIST (potentially post release)
+ * - better setting of deme sizes (applies to the map as well)
+ * - decide on JSON format (do we rename geo resolutions to spatial resolutions?)
+ * - make line width (and "extend") a function of line count
+ * - reinstate onhover behavior to highlight nodes in tree (this is a big performance slow-down)
  */
 
 @connect((state) => {
@@ -53,6 +55,8 @@ class States extends React.Component {
     this.data = {};
     this.groups = {};
     this.selections = {};
+    this.simulation = forceSimulation().stop();
+    this.drag = setUpDragFunctions(this.simulation);
   }
   recomputeData(props, recompute={everything: true}) {
     /* We only want to recompute data as needed (it's expensive!) */
@@ -74,14 +78,15 @@ class States extends React.Component {
       this.data.transmissions = computeTransmissions(props, this.data);
     }
 
-    this.simulation.nodes(this.data.demes).stop();
+    this.simulation.nodes(this.data.demes);
+
   }
   renderData(props, recompute={everything: true}) {
     /* Labels only render when we update everything. Possible improvement: when demes are not visible
     (i.e. due to visibility) we may want to remove the label and perhaps update the coordinates.
     Note that we also re-render when we recompute the color as the data bind needs updating */
     if (recompute.everything || recompute.colors) {
-      this.selections.labels = renderLabels({g: this.groups.labels, demes: this.data.demes});
+      this.selections.labels = renderLabels({g: this.groups.labels, demes: this.data.demes, width: this.props.width});
     }
     /* We remove & rerender demes on ∆colorBy & ∆geoRes, otherwise we update their attrs */
     if (recompute.everything || recompute.colors) {
@@ -97,26 +102,52 @@ class States extends React.Component {
   }
   componentDidMount() {
     this.groups = setUpSvg(this.svgDomRef);
-    this.simulation = forceSimulation()
-        // .force("link", forceLink().id((d) => d.id))
-        // .force("charge", forceManyBody().strength(-10)); // must parameterise strength
-        .force("center", forceCenter(this.props.width / 2, this.props.height / 2)) // mean of all nodes is in center of SVG
-        .on("tick", this.onTick);
-    this.drag = setUpDragFunctions(this.simulation);
     this.recomputeData(this.props);
     this.renderData(this.props);
+    this.setUpAndRunSimulation(); // must run after data is bound
   }
   componentWillReceiveProps(nextProps) {
     const recompute = compareProps(this.props, nextProps);
     this.recomputeData(nextProps, recompute);
     this.renderData(nextProps, recompute);
+    if (recompute.everything) this.setUpAndRunSimulation();
+  }
+  setUpAndRunSimulation() {
+    // Ideally we want to recompute forces whenever viz changes (as links will have changed). Due to potentical cost,
+    // we currently only recompute & restart when the geo res changes
+    // TODO: handle window size changes
+
+    this.simulation
+      .force("distribute", // distribute points over the SVG & don't let them live outside it.
+        forceDistribute(this.props.width, this.props.height)
+        .strength(0.2)
+      )
+      .force("collision", // don't let demes overlap
+        forceCollide()
+          .radius((n) => n.arcs.length ? n.arcs[0].outerRadius+this.props.width/50 : 0)
+          .strength(0.2)
+      )
+      .force("center",
+        forceCenter(this.props.width / 2, this.props.height / 2) // mean of all nodes is in center of SVG
+      );
+    if (this.data.transmissions && this.data.transmissions.length) {
+      this.simulation.force("link",
+        forceLink(this.data.transmissions)
+          .id((d) => d.name)
+          .strength(this.data.transmissions.length > 500 ? 0.005 : 0.1)
+      );
+    }
+    this.simulation.alpha(1) // reheat if necessary
+      .alphaDecay(0.05)
+      .on("tick", this.onTick)
+      .tick(100) // don't need to animate the burn in
+      .restart();
   }
   onTick = () => {
     this.selections.demes
       .attr("transform", (d) => "translate(" + d.parent.x + "," + d.parent.y + ")");
     this.selections.labels
-      .attr("x", (d) => d.x)
-      .attr("y", (d) => d.y);
+      .call((sel) => setLabelPosition(sel, this.props.width));
     updateTransmissionCoordinates(this.data.transmissions);
     this.selections.transmissions
       .attr("d", (d) => renderBezier(d, this.props.visibility, this.props.dateMinNumeric, this.props.dateMaxNumeric));
@@ -142,6 +173,7 @@ class States extends React.Component {
   }
 
   componentWillUnmount() {
+    this.simulation.stop();
     const svg = select(this.svgDomRef);
     svg.selectAll("*").remove();
   }
@@ -257,7 +289,7 @@ function computeCoordinates(width, height, n) {
   const y0 = height/2;
   const t = 2*Math.PI/(n+1);
   const r = Math.min(width, height) * 0.4;
-  return Array.from(Array(10).keys())
+  return Array.from(Array(n).keys())
     .map((index) => ({
       x: x0 + r*Math.cos(t*index),
       y: y0 + r*Math.sin(t*index)
@@ -314,7 +346,6 @@ function computeTransmissions(props, data) {
             return interpolator(i / (bezierCurve.length - 1));
           });
 
-          // following similar data structure same as in <Map>, should be able to cut down
           const transmission = {
             // originNode: n,
             destinationNode: child,
@@ -327,7 +358,9 @@ function computeTransmissions(props, data) {
             originNumDate: nodeDate,
             destinationNumDate: childDate,
             color: nodeColors[n.arrayIdx], // colour given by *origin* node
-            extend: extend
+            extend: extend,
+            source: parentDemeValue,
+            target: childDemeValue
           };
           transmissionData.push(transmission);
         }
@@ -351,13 +384,17 @@ function updateTransmissionCoordinates(transmissions) {
   });
 }
 
+/**
+ * Create d3 selections representing groups in the SVG to hold demes, transmissions etc.
+ * @param {} svgDomRef React reference to DOM.
+ */
 function setUpSvg(svgDomRef) {
   const svg = select(svgDomRef);
   return {
     svg,
+    transmissions: svg.append("g").attr("class", "transmissions"),
     demes: svg.append("g").attr("class", "nodes"),
-    labels: svg.append("g").attr("class", "labels"),
-    transmissions: svg.append("g").attr("class", "transmissions")
+    labels: svg.append("g").attr("class", "labels")
   };
 }
 
@@ -406,19 +443,31 @@ function renderUpdatesToExistingDemes({selection}) {
 
 /**
  * Given a SVG group selection (`g`), render labels corresponding
- * to the `demes`
+ * to the `demes`. You could imagine a force to find the best
+ * positioning taking into account surrounding demes & lines, but
+ * for now it's overkill.
  */
-function renderLabels({g, demes}) {
+function renderLabels({g, demes, width}) {
   g.selectAll("*").remove();
   return g.selectAll("text")
     .data(demes)
     .enter()
       .append("text")
-      .attr("x", (d) => d.x + 10)
-      .attr("y", (d) => d.y)
+      .call((sel) => setLabelPosition(sel, width))
+      .style("pointer-events", "none")
       .text((d) => d.name)
       .attr("class", "tipLabel")
       .style("font-size", "12px");
+}
+
+/**
+ * label positioning fn intended to be called by d3's `call` method
+ */
+function setLabelPosition(selection, svgWidth) {
+  selection
+    .attr("x", (d) => d.x*2<svgWidth ? d.x+10 : d.x-10)
+    .attr("y", (d) => d.y)
+    .attr("text-anchor", (d) => d.x*2<svgWidth ? "start" : "end");
 }
 
 /**
@@ -504,6 +553,54 @@ function compareProps(oldProps, newProps) {
   recompute.transmissionToggle = oldProps.showTransmissionLines !== newProps.showTransmissionLines;
   return recompute;
 }
+
+/**
+ * a d3-force to
+ * (1) prevent demes from being positioned outside the SVG bounds (takes into account deme radius)
+ * (2) scale demes to span `fracSvgToUse` of the horizontal & vertical space
+ */
+function forceDistribute(svgWidth, svgHeight, fracSvgToUse=0.95) {
+  let nodes;
+  let strength = 0.1;
+  const availableWidth = fracSvgToUse*svgWidth;
+  const availableHeight = fracSvgToUse*svgHeight;
+  const padFrac = (1-fracSvgToUse)/2; // padding desired at each edge
+
+  function force(alpha) {
+    /* ensure not out-of-bounds (should also do this on mouse event btw) */
+    let minX=svgWidth, maxX=0, minY=svgHeight, maxY=0;
+    nodes.forEach((n) => {
+      const r = n.arcs.length ? n.arcs[0].outerRadius + 10 : 10;
+      n.x = Math.max(r, Math.min(svgWidth - r, n.x));
+      n.y = Math.max(r, Math.min(svgHeight - r, n.y));
+      if (n.x<minX) minX=n.x;
+      if (n.x>maxX) maxX=n.x;
+      if (n.y<minY) minY=n.y;
+      if (n.y>maxY) maxY=n.y;
+    });
+    /* push them to be better distributed */
+    const scaleX = availableWidth/(maxX-minX);
+    const scaleY = availableHeight/(maxY-minY);
+    const offsetX = padFrac*svgWidth - minX; // -ve values indicate a leftward shift is desired
+    const offsetY = padFrac*svgHeight - minY;
+    nodes.forEach((n) => {
+      n.vx -= (n.x - (n.x+offsetX)*scaleX) * strength * alpha;
+      n.vy -= (n.y - (n.y+offsetY)*scaleY) * strength * alpha;
+    });
+  }
+
+  force.initialize = function _initialize(_) {
+    nodes = _;
+  };
+
+  force.strength = function _strength(_) {
+    strength = _;
+    return force;
+  };
+
+  return force;
+}
+
 
 const WithTranslation = withTranslation()(States);
 export default WithTranslation;
