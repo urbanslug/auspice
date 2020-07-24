@@ -21,15 +21,15 @@ class ToggleMapDisplayType extends React.Component {
       <div style={{marginBottom: 10, width: controlsWidth, fontSize: 14}}>
         <Toggle
           display
-          on={this.props.mapDisplayType === "states"}
+          on={this.props.mapDisplayType === "network"}
           callback={() => {
             this.props.dispatch({
               type: CHANGE_MAP_DISPLAY_TYPE,
               mapDisplayTypesAvailable: this.props.mapDisplayTypesAvailable,
-              mapDisplayType: this.props.mapDisplayType === "geo" ? "states" : "geo"
+              mapDisplayType: this.props.mapDisplayType === "geo" ? "network" : "geo"
             });
           }}
-          label={t("sidebar:Show state layout view")}
+          label={t("sidebar:Show network layout view")}
         />
       </div>
     );

@@ -67,8 +67,8 @@ const modifyStateViaURLQuery = (state, query) => {
   if (query.r) {
     state["geoResolution"] = query.r;
   }
-  if (Object.hasOwnProperty.call(query, "showStateMap")) {
-    state.mapDisplayType = "states";
+  if (Object.hasOwnProperty.call(query, "showNetwork")) {
+    state.mapDisplayType = "network";
   }
   if (query.p && state.canTogglePanelLayout && (query.p === "full" || query.p === "grid")) {
     state["panelLayout"] = query.p;
@@ -475,7 +475,7 @@ const checkAndCorrectErrorsInState = (state, metadata, query, tree, viewingNarra
     });
     state.mapDisplayType = mapDisplayType;
     state.mapDisplayTypesAvailable = mapDisplayTypesAvailable;
-    if (state.mapDisplayTypesAvailable.length === 1 || state.mapDisplayType === "geo") delete query.showStateMap;
+    if (state.mapDisplayTypesAvailable.length === 1 || state.mapDisplayType === "geo") delete query.showNetwork;
 
   } else {
     console.warn("JSONs did not include `geoResolutions`");

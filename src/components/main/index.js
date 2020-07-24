@@ -6,7 +6,7 @@ import SidebarToggle from "../framework/sidebar-toggle";
 import Info from "../info/info";
 import Tree from "../tree";
 import Map from "../map/map";
-import States from "../states/states";
+import States from "../network/network";
 import { controlsHiddenWidth } from "../../util/globals";
 import Footer from "../framework/footer";
 import DownloadModal from "../download/downloadModal";
