@@ -1,0 +1,14 @@
+{
+    "sidebarTheme": {
+        "background": "#333",
+        "color": "#fff",
+        "sidebarBoxShadow": "rgba(0, 0, 0, 0.2)",
+        "font-family": "Lato, Helvetica Neue, Helvetica, sans-serif",
+        "selectedColor": "#5097BA",
+        "unselectedColor": "#333",
+        "unselectedBackground": "#888"
+    },
+    "splashComponent": "splash.js",
+    "navbarComponent": "navbar.js",
+    "browserTitle": "COVID-19 PubSeq: Public SARS-CoV-2 Sequence Resources"
+}
