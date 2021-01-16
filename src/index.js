@@ -24,6 +24,7 @@ import "./css/bootstrapCustomized.css";
 import "./css/static.css";
 import "./css/notifications.css";
 import "./css/select.css";
+import "./css/genenetwork.css";
 
 /* FONTS */
 import 'typeface-lato'; // eslint-disable-line import/extensions

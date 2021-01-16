@@ -1,0 +1,33 @@
+.gn-header {
+    background-color: white;
+    margin: 0 auto;
+    padding: 20px;
+    text-align: center;
+    height: 100px;
+}
+
+.gn-header h1 {
+    color: #008066;
+}
+
+.gn-header a {
+    color: #008066;
+}
+
+.gn-header p {
+    font-size: 2em;
+}
+
+.gn-footer {
+    background: #058280;;
+    margin: 0 auto;
+    float: left;
+    color: #fff;
+    width: 100%;
+    padding: 20px;
+    font-size: 2em;
+}
+
+.gn-footer a {
+    color: #fff;
+}
